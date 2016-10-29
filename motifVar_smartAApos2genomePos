@@ -1,0 +1,293 @@
+#!/usr/bin/perl
+
+use warnings;
+use strict;
+use File::Basename;
+use Getopt::Long;
+use Pod::Usage;
+
+=head1 NAME
+
+smartAApos2genomePos
+
+=head1 SYNOPSIS
+
+ motifVarSmartAApos2genomePos [options] -e <ensembl-file> <smartDomain-file>
+
+  -h help
+  
+  -e mandatory; <ensembl-file> should be tab-delimited with the following headers:
+  EnsemblProteinID
+  EnsemblTranscriptID
+  EnsemblGeneID
+  genomicCodingStart (1-based)
+  genomicCodingEnd (stop codon usually included)
+  -- MUST BE sorted by proteinID, chr, coding Start and end in this order
+  -- sort -k5,5n -k3,3d  -k8,8n -k9,9n 
+  
+  <smartDomain-file> file extracted from Ensembl about protein domains (from Suganthi)
+  Chromosome:1...
+	SM00454 540-607 (ENSP00000342313)          
+	(smartDomainID  residuePos EnsemblProteinID)
+	
+	convert format to tsv (tsv can be obtained via motifVarSmartAApos2tsv)
+	chr     smartID start   end     EnsemblProteinID
+	chr1    SM00454 540     607     ENSP00000342313
+ 	
+ 	This script maps domain locations to genomic locations.
+ 	
+  OUTPUT:
+  this is NOT a bed file
+  col1: chr
+  col2: gStart 1-based
+  col3: gEnd   1-based
+  col4: aaStart-aaEnd
+  col5: smart domain ID
+  col6: protein aa start pos
+  col7: protein aa end pos
+  col8: EnsemblProtID
+  col9: EnsemblTranscriptID
+  col10: EnsemblGeneID
+  col11: strand (1:fwd / -1:rev)
+  
+  
+  Example:
+     motifVarSmartAApos2genomePos -e ensembl2coding_ensembl73.proteinIDs.genomicPos.txt allchromosomes.ens73.alldomainfeatures.smart.txt > jm.txt
+  
+=head1 DESCRIPTION
+
+=cut
+
+#option variables
+my $help;
+my $ensemblFile = '';
+
+#initialize options
+Getopt::Long::Configure ('bundling');
+
+if(!GetOptions ('h'=>\$help, 'e=s'=>\$ensemblFile) || scalar(@ARGV)!=1)
+{
+    if ($help)
+    {
+        pod2usage(-verbose => 2);
+    }
+    else
+    {
+        pod2usage(1);
+    }
+}
+
+## read ensembl file
+open (ENSEM, $ensemblFile) || die "Cannot open $ensemblFile: $!";
+
+
+## output file
+#my($name, $path, $ext) = fileparse($ifile, '\..*');
+#my $ofile = "$name.out";
+#open (OUTPUT, ">$ofile") || die "Cannot open $ofile: $!";
+
+## output header
+print "chr\tstart\tend\taastart-aaend\tsmart\tprotaastart\tprotaaend\tEnsemblProteinID\tEnsemblTranscriptID\tEnsemblGeneID\tstrand\n";
+
+
+# variables
+my $headerProcessed = 0;
+my $domainCtr = 0;
+my %header2col;
+my %proteinID2aaPos2gPos;
+my %proteinID2geneID;
+my %proteinID2transcriptID;
+my %proteinID2strand;
+my $aaPosCtr = 1;
+my $ctr = 0;
+my $offset = 0;
+	
+## read ensembl file
+LINE: while (<ENSEM>)
+{
+	s/\r?\n?$//;
+	my @fields = split(/\t/, $_);
+	chomp @fields; 
+	
+	if($headerProcessed == 0)
+	{
+		ITER: for my $desired ('EnsemblGeneID', 'EnsemblTranscriptID', 'EnsemblProteinID', 'EnsemblExonID', 
+													 'chr', 'genomicCodingStart', 'genomicCodingEnd',
+													 'strand')
+		{
+			for (my $i=0;$i<@fields;$i++)
+			{
+				if($fields[$i] eq $desired)
+				{
+					$header2col{$desired} = $i;
+					next ITER;
+				}
+			}
+			die("$desired not in the file:$!");
+		} 
+		
+		$headerProcessed = 1;
+	} ## if first row header
+	else
+	{	
+		my $geneid      = $fields[$header2col{'EnsemblGeneID'}];
+		my $transcriptid= $fields[$header2col{'EnsemblTranscriptID'}];
+		my $proteinid   = $fields[$header2col{'EnsemblProteinID'}];
+		my $gStart      = $fields[$header2col{'genomicCodingStart'}];  ## 1based
+		my $gEnd        = $fields[$header2col{'genomicCodingEnd'}];
+		my $chr         = $fields[$header2col{'chr'}];
+		my $strand      = $fields[$header2col{'strand'}];
+		
+		## initialize
+		if(!exists($proteinID2aaPos2gPos{$proteinid}))
+		{
+			$ctr = 0;
+			$aaPosCtr = 1;
+		}
+		
+		## store proteinID 2 aaPos 2 genomic Coding Pos
+		if($strand == 1)
+		{
+			for(my $i=$gStart;$i<=$gEnd;$i++)
+			{
+				$proteinID2aaPos2gPos{$proteinid}{$aaPosCtr}{$ctr} = $i;
+				$proteinID2geneID{$proteinid} = $geneid;
+				$proteinID2transcriptID{$proteinid} = $transcriptid;
+				$proteinID2strand{$proteinid} = $strand;
+				$ctr++;
+			
+				if($ctr == 3)
+				{
+					$aaPosCtr++;
+					$ctr = 0;
+				}
+			}
+		}
+		elsif($strand == -1)
+		{
+			for(my $i=$gEnd;$i>=$gStart;$i--)
+			{
+				$proteinID2aaPos2gPos{$proteinid}{$aaPosCtr}{$ctr} = $i;
+				$proteinID2geneID{$proteinid} = $geneid;
+				$proteinID2transcriptID{$proteinid} = $transcriptid;
+				$proteinID2strand{$proteinid} = $strand;
+				$ctr++;
+				if($ctr == 3)
+				{
+					$aaPosCtr++;
+					$ctr = 0;
+				}
+			}
+		}
+		else
+		{
+			die "unknown 'strand' symbol; either 1 or -1:$!" ;
+		}
+		
+	}
+}
+close(ENSEM);
+
+##debug
+#for my $protID ( sort keys %proteinID2aaPos2gPos ) 
+#{
+#	for my $aaPos ( sort {$a <=> $b} keys %{$proteinID2aaPos2gPos{$protID}} )
+#	{
+#		for my $ctr ( sort {$a <=> $b} keys %{$proteinID2aaPos2gPos{$protID}{$aaPos}})
+#		{
+#			print "$protID\t$aaPos\t$ctr\t$proteinID2aaPos2gPos{$protID}{$aaPos}{$ctr}\n";
+#		}
+#	}
+#}
+
+
+## input smart domain file
+my $ifile = $ARGV[0];
+open (INPUT, $ifile) || die "Cannot open $ifile: $!";
+
+# variables
+my $chr2 = 0;
+my $chrflag = 0;
+my $headerProcessed2 = 0;
+my %header2col2;
+my $desired = 0;
+
+while(<INPUT>)
+{
+	s/\r?\n?$//;
+	my @fields2 = split(/\t/, $_);
+	chomp @fields2; 
+	
+	if($headerProcessed2 == 0)
+	{
+		ITER: for my $desired2 ('chr', 'smartID', 'start', 'end', 'EnsemblProteinID')
+		{
+			for (my $i=0;$i<@fields2;$i++)
+			{
+				if($fields2[$i] eq $desired2)
+				{
+					$header2col2{$desired2} = $i;
+					next ITER;
+				}
+			}
+			die("$desired2 can't be in the file:$!");
+		} 
+		
+		$headerProcessed2 = 1;
+	} ## if first row header
+	else
+	{
+		my $chromosome = $fields2[$header2col2{'chr'}];
+		my $smartID    = $fields2[$header2col2{'smartID'}];
+		my $startaa    = $fields2[$header2col2{'start'}];
+		my $endaa      = $fields2[$header2col2{'end'}];
+		my $proteinID  = $fields2[$header2col2{'EnsemblProteinID'}];
+		my $annotation = $smartID . "\t" . $startaa . "\t" . $endaa . "\t" . $proteinID . 
+											 "\t" .$proteinID2transcriptID{$proteinID} .
+		                   "\t" . $proteinID2geneID{$proteinID} . "\t" . $proteinID2strand{$proteinID};
+		
+		my $prevaa = 0;
+		my $newline = 0;
+		my $prevan = '';
+		my $prevgp = 0;
+		
+		for (my $i=$startaa;$i<=$endaa;$i++)
+		{			
+			for (my $j=0;$j<3;$j++)
+			{
+				## non consecutive = intron-exon break
+				## having solely this assumes that there is no break at 1st aa!!
+				if(abs($proteinID2aaPos2gPos{$proteinID}{$i}{$j} - $prevgp) > 1) 
+				{
+					## printed as a previous because this will be bypassed on first pass
+					if($newline)
+					{
+						## if first aa of exon, with break, no prevaa
+						if(!$prevaa)
+						{
+							$prevaa = $i;
+						}
+						print "\t$prevgp\t$startaa\-$prevaa\t$prevan\n";
+					}
+					
+					## printed in the current line
+					print "$chromosome\t$proteinID2aaPos2gPos{$proteinID}{$i}{$j}";
+					$startaa = $i;
+				}
+				
+				$prevgp = $proteinID2aaPos2gPos{$proteinID}{$i}{$j};
+				$prevan = $annotation;
+				$newline = 1;
+			}
+			
+			$prevaa = $i;
+		}
+		print "\t$prevgp\t$startaa\-$prevaa\t$prevan\n";
+		
+		
+	}
+	
+}
+
+close(INPUT);
+	

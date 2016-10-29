@@ -1,0 +1,368 @@
+#!/usr/bin/perl
+
+use warnings;
+use strict;
+use jmlib;
+use File::Basename;
+use Getopt::Long;
+use Pod::Usage;
+
+=head1 NAME
+
+smartfasta2tsv4lyn
+
+=head1 SYNOPSIS
+
+ smartfasta2tsv4lyn [options] <fasta-file>
+
+  -h help
+  -o optional; output file; default is <fasta-filename>.prot
+  -i optional; individual motif format, gives gap sizes too; default is 0 (combined format)
+  -f 1 or 2
+  
+  format 1: (default)
+  currently tailored for use with SMART-generated TPR FASTA information, for Regan Lab, to generate protein and domain information. It can be modeified to include other kinds of information. It takes in the header of the FASTA file and parse out
+  1) protein ID
+  2) name of organism
+  3) start, end positions
+  4) sequence of TPR
+  5) length of sequence
+  6) source
+  7) domain name
+  8) comments
+  based this format:
+  >smart|TPR-ensembl|ENSACAP00000000388|ENSACAP00000000388/1246-1279 no description [Anolis carolinensis]
+  
+  format 2:
+  for simple SMART fasta format:
+  >Q6G6H8_STAAS/805-885
+  
+  this will generate
+  1) protein ID
+  2) start, end positions
+  3) length of sequence
+  
+  Example:
+    smartfasta2tsv4lyn -o jm.prot -i 1 jm.fa
+  
+=head1 DESCRIPTION
+
+=cut
+
+#option variables
+my $help;
+my $ifile;
+my $ofile = 0;
+my $indivflag = 0;
+my $format = 1;
+
+#initialize options
+Getopt::Long::Configure ('bundling');
+
+if(!GetOptions ('h'=>\$help, 'o=s'=>\$ofile, 'i=i'=>\$indivflag, 'f=i'=>\$format) || scalar(@ARGV)!=1)
+{
+    if ($help)
+    {
+        pod2usage(-verbose => 2);
+    }
+    else
+    {
+        pod2usage(1);
+    }
+}
+
+## input file
+$ifile = $ARGV[0];
+open (IN, $ifile) || die "Cannot open $ifile: $!";
+
+## check if it's fasta
+if(!(isFasta($ifile)))
+{
+	die "Input file is not a FASTA file!";
+}
+
+## output file
+if($ofile eq 0)
+{
+	my($name, $path, $ext) = fileparse($ifile, '\..*');
+	$ofile = "$name.prot";
+}
+else{}
+
+open (OUTPUT, ">$ofile") || die "Cannot open $ofile: $!";
+
+# output header
+
+if($format == 1)
+{
+	print OUTPUT "protein-id\torganism-name\tdomain";
+	if(!$indivflag)
+	{
+		print OUTPUT "\tstart-end\tlength\tmotifNum\tgaps";
+	}
+	else
+	{
+		print OUTPUT "\tstart\tend\tlength";
+	}
+	
+	print OUTPUT "\tsource\tprotein-sequence\tcomments\n";
+	
+	# set the input record separator to >, so each "line" is >
+	local $/ = '>smart';
+	
+	# variable
+	my @seq;
+	my $organismname = '';
+	my $proteinid = '';
+	my %combined;
+	my @proteinname;
+	my $motifctr = 0;
+	my $gap = 0;
+	my $prevend = 0;
+	
+	## loop FASTA file
+	while(<IN>)
+	{
+		chomp $_;
+		
+		# format 1
+		# original == >smart5_1|TPR-ensembl|AGAP000136-PA|AGAP000136-PA/111-144 ENSANGP00000019891 (Fragment) [Anopheles gambiae]
+		# variant == >smart|TPR-s|160492.XF2169/40-73 annotation not available [Xylella fastidiosa 9a5c]
+		
+		# strip out '>'
+		s/>//g; 
+		next if !length($_); # skip if empty line
+		
+		# last section
+		m/\/(\d+)\-(\d+) (.*)/;
+	
+		# positions
+		my $start = $1;
+		my $end = $2;	
+		my $length = $end - $start + 1;
+		my $gap = $start - $prevend - 1;	
+		$prevend = $end;
+		
+		my $comments = $3;	
+		
+		
+		# capture header
+		m/^(.*)\n/;
+		my @header = split(/\|/,$1);
+		chomp @header;
+			
+		my $source = $header[0];
+		my $domain = $header[1];
+		
+		if($#header != 3)
+		{
+			my @hohoho = split(/\//,$header[2]);
+			$proteinid = $hohoho[0];
+		}
+		else
+		{
+			$proteinid = $header[2];
+		}
+		##print "$header[3]\n"; ##debug
+		
+		# organism
+		my @orgflag = m/\[(.*?)\]/g ;
+		if (exists($orgflag[$#orgflag]))
+		{
+			$organismname = $orgflag[$#orgflag];
+		}
+		else
+		{
+			$organismname = 'na'; 
+		}
+		
+		# strip it out to make way for sequence next
+		s/^(.*)\n//;
+		
+		# the sequence
+		s/\n//mg; # modifier m treat string as multiple lines
+			
+		# if individual flag on
+		if($indivflag)
+		{	
+			# note that SMART is added because >smart is used being removed as an identifier
+			print OUTPUT "$proteinid\t$organismname\t$domain\t$start\t$end\t$length\tsmart$source\t$_\t$comments\n";
+		}
+		else # individual flag not on = combined format
+		{		
+			# first time
+			if(!exists($combined{$proteinid}))
+			{
+				push(@proteinname,$proteinid);
+				$combined{$proteinid}{'organismname'} = $organismname;
+				$combined{$proteinid}{'domain'} = $domain;
+				$combined{$proteinid}{'startend'} = "$start-$end";
+				$combined{$proteinid}{'length'} = $length;
+				$combined{$proteinid}{'source'} = "$source";
+				$combined{$proteinid}{'sequence'} = $_;
+				$combined{$proteinid}{'comments'} = $comments;
+				$combined{$proteinid}{'gaps'} = '';
+				$motifctr = 1;
+			}
+			else # second or more time
+			{
+				$combined{$proteinid}{'startend'} = join(';',$combined{$proteinid}{'startend'},"$start-$end");
+				$combined{$proteinid}{'length'} = join(';',$combined{$proteinid}{'length'},$length);
+				$combined{$proteinid}{'sequence'} = join('_',$combined{$proteinid}{'sequence'},$_);
+				
+				if($combined{$proteinid}{'gaps'} eq '') # exists doesnt work here so tried this workaround
+				{
+					$combined{$proteinid}{'gaps'} = $gap;
+				}
+				else
+				{
+					$combined{$proteinid}{'gaps'} = join(';',$combined{$proteinid}{'gaps'},$gap);
+				}
+				
+				$motifctr++;
+				die "$proteinid organismname" if $combined{$proteinid}{'organismname'} ne $organismname;
+				die "$proteinid domain" if $combined{$proteinid}{'domain'} ne $domain;
+				die "$proteinid comments" if $combined{$proteinid}{'comments'} ne $comments;
+			}
+			
+			$combined{$proteinid}{'motifs'} = $motifctr;
+		}
+	}## end of one line of fa file
+	
+	if(!$indivflag)
+	{
+		for(my $i=0;$i<@proteinname;$i++)
+		{
+			# note that SMART is added because >smart is used being removed as an identifier
+			print OUTPUT "$proteinname[$i]\t$combined{$proteinname[$i]}{'organismname'}\t".
+											"$combined{$proteinname[$i]}{'domain'}\t$combined{$proteinname[$i]}{'startend'}\t".
+											"$combined{$proteinname[$i]}{'length'}\t".
+											"$combined{$proteinname[$i]}{'motifs'}\t$combined{$proteinname[$i]}{'gaps'}\t".
+											"smart$combined{$proteinname[$i]}{'source'}\t$combined{$proteinname[$i]}{'sequence'}\t".
+											"$combined{$proteinname[$i]}{'comments'}\n";
+		}
+	}
+}
+elsif($format == 2)
+{
+	print OUTPUT "protein-id";
+	if(!$indivflag)
+	{
+		#print OUTPUT "\tstart-end\tlength\tmotifNum\tgaps";
+	}
+	else
+	{
+		print OUTPUT "\tstart\tend\tlength";
+	}
+	
+	print OUTPUT "\tprotein-sequence\n";
+	
+	# set the input record separator to >, so each "line" is >
+	local $/ = '>';
+	
+	# variable
+	my @seq;
+	my $organismname = '';
+	my $proteinid = '';
+	my %combined;
+	my @proteinname;
+	my $motifctr = 0;
+	my $gap = 0;
+	my $prevend = 0;
+	
+	## loop FASTA file
+	while(<IN>)
+	{
+		chomp $_;
+		
+		# format 2
+		# >A0PYM7_CLONN/381-458
+		
+		# strip out '>'
+		s/>//g; 
+		next if !length($_); # skip if empty line
+		
+		# last section
+		m/^(.*)\/(\d+)\-(\d+)/;
+		
+		# positions
+		$proteinid = $1;
+		my $start = $2;
+		my $end = $3;	
+		my $length = $end - $start + 1;
+		
+		# strip it out to make way for sequence next
+		s/^(.*)\n//;
+		
+		# the sequence
+		s/\n//mg; # modifier m treat string as multiple lines
+			
+		# if individual flag on
+		if($indivflag)
+		{	
+			# note that SMART is added because >smart is used being removed as an identifier
+			print OUTPUT "$proteinid\t$start\t$end\t$length\t$_\n";
+		}
+		else # individual flag not on = combined format
+		{		
+#			# first time
+#			if(!exists($combined{$proteinid}))
+#			{
+#				push(@proteinname,$proteinid);
+#				$combined{$proteinid}{'organismname'} = $organismname;
+#				$combined{$proteinid}{'domain'} = $domain;
+#				$combined{$proteinid}{'startend'} = "$start-$end";
+#				$combined{$proteinid}{'length'} = $length;
+#				$combined{$proteinid}{'source'} = "$source";
+#				$combined{$proteinid}{'sequence'} = $_;
+#				$combined{$proteinid}{'comments'} = $comments;
+#				$combined{$proteinid}{'gaps'} = '';
+#				$motifctr = 1;
+#			}
+#			else # second or more time
+#			{
+#				$combined{$proteinid}{'startend'} = join(';',$combined{$proteinid}{'startend'},"$start-$end");
+#				$combined{$proteinid}{'length'} = join(';',$combined{$proteinid}{'length'},$length);
+#				$combined{$proteinid}{'sequence'} = join('_',$combined{$proteinid}{'sequence'},$_);
+#				
+#				if($combined{$proteinid}{'gaps'} eq '') # exists doesnt work here so tried this workaround
+#				{
+#					$combined{$proteinid}{'gaps'} = $gap;
+#				}
+#				else
+#				{
+#					$combined{$proteinid}{'gaps'} = join(';',$combined{$proteinid}{'gaps'},$gap);
+#				}
+#				
+#				$motifctr++;
+#				die "$proteinid organismname" if $combined{$proteinid}{'organismname'} ne $organismname;
+#				die "$proteinid domain" if $combined{$proteinid}{'domain'} ne $domain;
+#				die "$proteinid comments" if $combined{$proteinid}{'comments'} ne $comments;
+#			}
+#			
+#			$combined{$proteinid}{'motifs'} = $motifctr;
+		}
+	}## end of one line of fa file
+	
+#	if(!$indivflag)
+#	{
+#		for(my $i=0;$i<@proteinname;$i++)
+#		{
+#			# note that SMART is added because >smart is used being removed as an identifier
+#			print OUTPUT "$proteinname[$i]\t$combined{$proteinname[$i]}{'organismname'}\t".
+#											"$combined{$proteinname[$i]}{'domain'}\t$combined{$proteinname[$i]}{'startend'}\t".
+#											"$combined{$proteinname[$i]}{'length'}\t".
+#											"$combined{$proteinname[$i]}{'motifs'}\t$combined{$proteinname[$i]}{'gaps'}\t".
+#											"smart$combined{$proteinname[$i]}{'source'}\t$combined{$proteinname[$i]}{'sequence'}\t".
+#											"$combined{$proteinname[$i]}{'comments'}\n";
+#		}
+#	}
+}
+else
+{
+	print "format option only takes 1 and 2: Unrecognizable format";
+	die;
+}
+
+close (IN);
+close (OUTPUT);

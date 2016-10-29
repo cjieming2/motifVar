@@ -1,0 +1,235 @@
+#!/usr/bin/perl
+
+use warnings;
+use strict;
+use POSIX;
+use File::Basename;
+use Getopt::Long;
+use Pod::Usage;
+
+=head1 NAME
+
+motifVarCalcRareEnrichment
+
+=head1 SYNOPSIS
+
+ motifVarCalcRareEnrichment [options] <tsv>
+
+  -h help
+  -f rare freq definition; default 0.005
+  -c columns separated by ',' and denoted by '=', e.g. AF=20,NS=30,AC=8,ID=39,resNum=46
+     namely, AF,NS,AC,ID,resNum
+  
+  tsv file
+  INPUT: columns with first 3 cols chr, start (0-based) and end (1-based) (BED-like)
+  AF (will be converted to MAF), NS, AC
+  chr, start, end, EnsemblGeneID, resNum -- used as unique key, so each resNum has independent counts
+  
+  this script uses AC=1 to filter off singletons, and calculates only rare:common, NS:S ratios.
+  
+  note that this script looks for 'synonymous' and the rest are assumed to be 'nonsynonymous'.
+  - if(($NS ne 'synonymous_variant') && ($NS ne 'splice_region_variant,synonymous_variant'))
+  
+  OUTPUT:
+  col1: resNum
+  col2: totVar
+  col3: totVar.noS - noSingle
+  col4: numRare
+  col5: numRare.noS
+  col6: P.rare.noS
+  col7: ratio.rare2comm.noS
+  col8: num.NS
+  col9: num.NS.noS
+  col10: P.NS.noS
+  col11:ratio.ns2s.noS
+  
+  Example:
+     motifVarCalcRareEnrichment -f 0.005 -c AF=20,NS=30,AC=8,ID=39,resNum=46 1KG.snps.nonmono.smartDomain2gPos.TPR.34aa.sorted.txt > 1KG.snps.nonmono.smartDomain2gPos.TPR.34aa.sorted.enrich
+  
+=head1 DESCRIPTION
+
+=cut
+
+#option variables
+my $help;
+my $frq = 0.005;
+my $cols = '';
+
+#initialize options
+Getopt::Long::Configure ('bundling');
+
+if(!GetOptions ('f=f'=>\$frq,'c=s'=>\$cols,'h'=>\$help) || scalar(@ARGV)!=1)
+{
+    if ($help)
+    {
+        pod2usage(-verbose => 2);
+    }
+    else
+    {
+        pod2usage(1);
+    }
+}
+
+## input 
+my $ifile = $ARGV[0];
+open (INPUT, $ifile) || die "Cannot open $ifile: $!";
+
+# variables
+my ($resNum, $maf, $NS) = (0);
+my %totVar;
+my %numRare;
+my %numNS;
+my %numRareNS;
+my $max = 0;
+my $headerProcessed2 = 0;
+my %header2col2;
+my %KEYY;
+
+## break up columns
+# AF=20,NS=30,AC=8,ID=39,resNum=46
+my @col = split(/,/, $cols);
+
+for (my $i=0;$i<@col;$i++)
+{
+	if($col[$i] =~ m/NS=(\d+)/){  $header2col2{'NS'} = $1;	}
+	elsif($col[$i] =~ m/ID=(\d+)/){  $header2col2{'EnsemblGeneID'} = $1;	}
+	elsif($col[$i] =~ m/AC=(\d+)/){  $header2col2{'AC'} = $1;	}
+	elsif($col[$i] =~ m/resNum=(\d+)/){  $header2col2{'resNum'} = $1;	}
+	elsif($col[$i] =~ m/AF=(\d+)/){  $header2col2{'maf'} = $1;	}
+}
+
+#print "NS=$header2col2{'NS'}\nID=$header2col2{'EnsemblGeneID'}\nAC=$header2col2{'AC'}\nresNum=$header2col2{'resNum'}\nAF=$header2col2{'maf'}\n"; ##debug
+
+## start loop
+while(<INPUT>)
+{
+	s/\r?\n?$//;
+	my @fields2 = split(/\t/, $_);
+	chomp @fields2; 
+	
+		my $chr 	 = $fields2[0];
+		my $start  = $fields2[1];
+		my $end    = $fields2[2];
+		
+		$NS     = $fields2[$header2col2{'NS'}-1];
+		my $gene   = $fields2[$header2col2{'EnsemblGeneID'}-1];
+		my $ac     = $fields2[$header2col2{'AC'}-1];
+		$resNum = $fields2[$header2col2{'resNum'}-1];
+		$maf    = ($fields2[$header2col2{'maf'}-1] < 0.5) ? $fields2[$header2col2{'maf'}-1] : (1 - $fields2[$header2col2{'maf'}-1]);
+		
+#		print "$fields2[$header2col2{'maf'}]\t$maf\n"; #debug
+
+		my $keyy   = "$chr-$start-$end-$gene-$resNum";
+#		print "$resNum\n"; #debug
+#	}#debug
+		if($max < $resNum)
+		{
+			$max = $resNum;
+		}
+		
+		# if hash doesnt exist, create
+		if(!exists($KEYY{$keyy}))
+		{
+			$KEYY{$keyy} = 1;
+			# is it a singleton, allele count = exactly 1
+			if($ac == 1)
+			{
+				if(!exists($totVar{$resNum}{'Sin'})){	$totVar{$resNum}{'Sin'} = 1;	}
+				else{	$totVar{$resNum}{'Sin'}++;	}
+				
+				if(!exists($numRare{$resNum}{'Sin'})){ $numRare{$resNum}{'Sin'} = 1; }
+				else{	$numRare{$resNum}{'Sin'}++;	}
+				
+				# is it NS
+				if(($NS ne 'synonymous_variant') && ($NS ne 'splice_region_variant,synonymous_variant'))
+				{
+					if(!exists($numNS{$resNum}{'Sin'})){	$numNS{$resNum}{'Sin'} = 1;		}
+					else{		$numNS{$resNum}{'Sin'}++;		}
+				}
+			}
+			else # not a singleton
+			{
+				if(!exists($totVar{$resNum}{'noSin'})){	$totVar{$resNum}{'noSin'} = 1;	}
+				else{	$totVar{$resNum}{'noSin'}++;	}
+				
+				# if rare, maf <= 0.005
+				if($maf <= $frq)
+				{
+					if(!exists($numRare{$resNum}{'noSin'})){ $numRare{$resNum}{'noSin'} = 1; }
+					else{	$numRare{$resNum}{'noSin'}++;	}
+					
+				}
+				
+				# is it NS
+				if(($NS ne 'synonymous_variant') && ($NS ne 'splice_region_variant,synonymous_variant'))
+				{
+					if(!exists($numNS{$resNum}{'noSin'})){	$numNS{$resNum}{'noSin'} = 1;		}
+					else{		$numNS{$resNum}{'noSin'}++;		}
+				}
+			}
+		}
+		else # if exist
+		{
+			## skip line
+		}
+	
+	
+}
+
+## print
+# header
+print "resNum\t".
+"totVar\t".
+"totVar.noS\t".
+"numRare\t".
+"numRare.noS\t".
+"P.rare.noS\t".
+"ratio.rare2comm.noS\t".
+"num.NS\t".
+"num.NS.noS\t".
+"P.NS.noS\t".
+"ratio.ns2s.noS\n";
+
+# calculations
+my $pseudo0 = 0.00001;
+for (my $i=1; $i<=$max; $i++)
+{
+	## there are cases where all variants at that position are singletons!
+	## if the residue position contains some SNVs that are not singletons
+	## initialize here...
+	if(!exists($totVar{$i}{'noSin'})){ $totVar{$i}{'noSin'} = 0; }
+	if(!exists($numRare{$i}{'noSin'})){ $numRare{$i}{'noSin'} = 0; }
+	if(!exists($numNS{$i}{'noSin'})){ $numNS{$i}{'noSin'} = 0; }
+	if(!exists($totVar{$i}{'Sin'})){ $totVar{$i}{'Sin'} = 0; }
+	if(!exists($numRare{$i}{'Sin'})){ $numRare{$i}{'Sin'} = 0; }	
+	if(!exists($numNS{$i}{'Sin'})){	$numNS{$i}{'Sin'} = 0; }	
+
+	my $comm = $totVar{$i}{'noSin'} - $numRare{$i}{'noSin'};
+	my $syno = $totVar{$i}{'noSin'} - $numNS{$i}{'noSin'};
+	
+	if($comm == 0){ $comm = $pseudo0; }
+	if($syno == 0){ $syno = $pseudo0; }
+		
+	# print
+	print "$i\t";
+	printf "%1.f\t", $totVar{$i}{'Sin'} + floor($totVar{$i}{'noSin'});
+	printf "%1.f\t", floor($totVar{$i}{'noSin'});
+	printf "%1.f\t", $numRare{$i}{'Sin'} + $numRare{$i}{'noSin'};
+	printf "%1.f\t", floor($numRare{$i}{'noSin'});
+	
+	if($totVar{$i}{'noSin'} == 0){ printf "NA\t"; }else{ printf "%.3f\t", floor($numRare{$i}{'noSin'}) / $totVar{$i}{'noSin'}; }
+	
+	if($numRare{$i}{'noSin'} == 0 && $comm == $pseudo0){ printf "NA\t"; }else{ printf "%.3f\t", $numRare{$i}{'noSin'} / $comm; }
+		
+	printf "%1.f\t", $numNS{$i}{'Sin'} + $numNS{$i}{'noSin'};
+	printf "%1.f\t", $numNS{$i}{'noSin'};
+	
+	if($totVar{$i}{'noSin'} == 0){ printf "NA\t"; }else{ printf "%.3f\t", $numNS{$i}{'noSin'} / $totVar{$i}{'noSin'}; }
+	
+	if($numRare{$i}{'noSin'} == 0 && $syno == $pseudo0){ printf "NA\t"; }else{ printf "%.3f\n", $numNS{$i}{'noSin'} / $syno; }
+	
+	
+	
+}
+close(INPUT);
+	

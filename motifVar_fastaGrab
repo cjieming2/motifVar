@@ -1,0 +1,271 @@
+#!/usr/bin/perl
+
+use warnings;
+use strict;
+use File::Basename;
+use Getopt::Long;
+use Pod::Usage;
+
+=head1 NAME
+
+motifVarFastaGrab
+
+=head1 SYNOPSIS
+
+ fastaSplit [options] <input tsv>
+
+  -h help
+  
+  -f fasta file
+  header should include ">chr|EnsemblGeneID|EnsemblProteinID" IN THIS ORDER
+  
+  <input tsv>
+  this tab-delimited file MUST contain the following fields in header (output 
+  of motifVarSmartAApos2genomePos/_wrap with motif info):
+  chr 					  = chromosome
+  protaastart     = residue start residue position in protein 
+  protaaend       = residue start end position in protein 
+  								(seq grabbed based on these; 1-based)
+  smart           = smartID of domain
+  EnsemblProteinID= Ensembl protein ID
+  EnsemblGeneID   = Ensembl gene ID
+  DOMAIN          = domain name
+  DEFINITION      = domain name in words
+  strand				  = strand information (1/-1)
+  
+This takes in a fasta and a tab-delimited file. Using the residue position in the tsv file,
+grab the sequences off the FASTA (something like FastaToBed in bedtools but this is 
+tailored to the headers and output used in motifVar project).
+
+V inefficient now - printing has a number of loops
+
+	OUTPUT:
+	Note that though the input can be redundant (multiple exons but same domain region), the
+	output is non-redundant, unique upon the aaStart-aaEnd and proteinID. Hence,
+	
+	col1=chr
+	col2=smart
+	col3=protaastart (1-based)
+	col4=protaaend 
+	col5=EnsemblProteinID
+	col6=EnsemblGeneID
+	col7=DOMAIN
+	col8=DEFINITION
+	col9=motifsize
+	col10=sequence
+       
+  motifVarFastaGrab -f tpr.proteins.fa tpr.motifs.tsv > tpr.motifs.seq.txt
+  
+=head1 DESCRIPTION
+
+=cut
+
+#option variables
+my $help;
+my $fafile = '';
+
+#initialize options
+Getopt::Long::Configure ('bundling');
+
+if(!GetOptions ('h'=>\$help, 'f=s'=>\$fafile) || scalar(@ARGV)!=1)
+{
+    if ($help)
+    {
+        pod2usage(-verbose => 2);
+    }
+    else
+    {
+        pod2usage(1);
+    }
+}
+
+## FASTA file
+open(FA, $fafile) || die "Cannot open $fafile";
+
+## fasta global variables
+my $faheaderProcessed = 0;
+my %faprotID2geneID;
+my %faprotID2seq;
+my $fachr;
+my $fageneID;
+my $faprotID;
+
+######################################FASTA############
+## read FASTA file to obtain sequence
+ITER:while(<FA>)
+{
+	next ITER if /^\s$/;
+	chomp $_;
+	my @line = split(//,$_);
+	
+	if($line[0] eq ">")
+	{		
+		$_ =~ s/>//g;
+		
+		my @headfields = split(/\|/,$_);
+		$fachr    = $headfields[0];
+		
+		if($fachr eq 'X')
+		{
+			$fachr = 23;
+		}
+		elsif($fachr eq 'Y')
+		{
+			$fachr = 24;
+		}
+		
+		$fageneID = $headfields[1];
+		$faprotID = $headfields[2];
+		
+		#print "$faprotID\n"; ##debug
+		
+		if(!exists($faprotID2geneID{$fachr}{$faprotID}))
+		{
+			$faprotID2geneID{$fachr}{$faprotID} = $fageneID;		
+		}
+		else
+		{
+			warn "ERROR: $faprotID/$fachr has >1 entries in fasta: $fageneID $faprotID2geneID{$faprotID}{$fachr}!:$!";
+		}
+		
+		$faheaderProcessed = 1;
+		next ITER;
+	}
+	elsif(($line[0] ne ">") && (!$faheaderProcessed))
+	{
+		die "FASTA file does not have a starting '>'!:$!";
+	}
+	else
+	{
+		## store the sequence
+		if(!exists($faprotID2seq{$faprotID}))
+		{
+			$faprotID2seq{$faprotID} = $_;
+		}
+		else
+		{
+			$faprotID2seq{$faprotID} = $faprotID2seq{$faprotID}.$_;
+		}
+	}
+}## end of one line of fa file
+close(FA);
+
+
+######################################FASTA############
+## read TSV file
+
+## variables
+my $headerProcessed = 0;
+my %header2col;
+my %protID2row;
+my %protID2res;
+
+my $ifile = $ARGV[0];
+open (INPUT, $ifile) || die "Cannot open $ifile: $!";
+
+## read tsv file
+while (<INPUT>)
+{
+	s/\r?\n?$//;
+	my @fields = split(/\t/, $_);
+	chomp @fields; 
+	
+	if($headerProcessed == 0)
+	{
+		LINE: for my $desired ('EnsemblGeneID', 'EnsemblTranscriptID', 'EnsemblProteinID', 'protaastart', 'protaaend', 
+													 'chr', 'DOMAIN', 'DEFINITION', 'smart', 'strand')
+		{
+			for (my $i=0;$i<@fields;$i++)
+			{
+				if($fields[$i] eq $desired)
+				{
+					$header2col{$desired} = $i;
+					next LINE;
+				}
+			}
+			die("$desired not in $ifile:$!");
+		} 
+		
+		$headerProcessed = 1;
+	} ## if first row header
+	else
+	{
+		my $chr = $fields[$header2col{'chr'}];
+		$chr =~ s/chr//g;
+		
+		my $protID = $fields[$header2col{'EnsemblProteinID'}];
+		
+		my $annot = $chr."\t".
+											$fields[$header2col{'smart'}]."\t".
+											$fields[$header2col{'protaastart'}]."\t".
+											$fields[$header2col{'protaaend'}]."\t".
+											$protID."\t".
+											$fields[$header2col{'EnsemblTranscriptID'}]."\t".
+											$fields[$header2col{'EnsemblGeneID'}]."\t".
+											$fields[$header2col{'strand'}]."\t".
+											$fields[$header2col{'DOMAIN'}]."\t".
+											$fields[$header2col{'DEFINITION'}];
+											
+		my $aapos = $fields[$header2col{'protaastart'}]."-".$fields[$header2col{'protaaend'}];
+		my $smart = $fields[$header2col{'smart'}];
+		
+#		print "$chr|$protID|$annot|$aapos\n"; ##debug
+
+		## this is intentionally placed here so that $annot remains untouched by this naming; remains X and Y
+		if($chr eq 'X')
+		{
+			$chr = 23;
+		}
+		elsif($chr eq 'Y')
+		{
+			$chr = 24;
+		}
+		$protID2row{$chr}{$protID}{$smart}{$fields[$header2col{'protaastart'}]}{$fields[$header2col{'protaaend'}]} = $annot;
+		$protID2res{$chr}{$protID}{$smart}{$fields[$header2col{'protaastart'}]}{$fields[$header2col{'protaaend'}]} = $aapos;
+
+#		if(!exists($protID2row{$chr}{$protID}))
+#		{
+#			$protID2row{$chr}{$protID} = $annot;
+#			$protID2res{$chr}{$protID} = $aapos;
+#		}
+#		else
+#		{
+#			if($protID2row{$chr}{$protID} eq $annot)
+#			{
+#				warn "ERROR: $protID/$chr has >1 different entries in TSV, $protID2row{$chr}{$protID}; $annot!:$!";
+#			}			
+#		}
+					
+	}
+}
+
+################################################################
+## printing
+
+## header
+print "chr\tsmart\tprotaastart\tprotaaend\tEnsemblProteinID\tEnsemblTranscriptID\tEnsemblGeneID\tstrand\tDOMAIN\tDEFINITION\tmotifSize\tsequence\n";
+
+## lines
+for my $chrom (sort {$a <=> $b} keys %protID2row)
+{		
+	for my $protein (sort {$a cmp $b} keys % { $protID2row{$chrom} })
+	{
+		for my $smartid (sort {$a cmp $b} keys % { $protID2row{$chrom}{$protein} })
+		{
+			for my $startpos (sort {$a <=> $b} keys % { $protID2row{$chrom}{$protein}{$smartid} })
+			{
+				for my $endpos (sort {$a <=> $b} keys % { $protID2row{$chrom}{$protein}{$smartid}{$startpos} })
+				{
+								my @grab = split(/-/, $protID2res{$chrom}{$protein}{$smartid}{$startpos}{$endpos});
+								my $stagrab = $grab[0];
+								my $endgrab = $grab[1];
+								my $length  = $endgrab - $stagrab + 1;
+								
+								my $sequence = substr($faprotID2seq{$protein}, $stagrab-1, $length);
+								
+								print "chr$protID2row{$chrom}{$protein}{$smartid}{$startpos}{$endpos}\t$length\t$sequence\n";
+				}
+			}
+		}
+	}
+}

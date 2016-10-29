@@ -1,0 +1,99 @@
+######################
+##### CITATION #######
+
+If you use resources from MotifVar, please cite:
+Chen J, Regan L, Gerstein M. MotifVar: A resource for amplifying population-genetic signals with protein repeats (in submission) 
+
+
+
+######################
+## COMMENTS ##########
+
+Please email J Chen at jieming dot chen at yale dot edu for comments/feedback.
+
+
+
+######################
+## INSTALLATION ######
+
+1) Add the folder to your .bash_profile or .bash_rc
+PATH=/path/to/motifVar-v0.1/:$PATH
+export PATH
+
+2) Main file to edit is motifVar.sh
+- there are 10 modules in motifVar pipeline. Some of them depend other modules and software to work but some don't. A more detailed description is below.
+- this is a SEMI-automated pipeline, with certain modules highlighted where possible manual work can be done to make your analyses more accurate or specific to your needs
+
+
+
+######################
+## MANUAL WORK #######
+- Please refer to log files of folders ending with '-m' to see reminder and some suggestions for manual work.
+- Log files in each folder after runs also contain names of input and output files used. 
+- Note that any manual work is totally optional, at the discretion of the user. The pipeline will still run without manual work. These are merely guidelines for more tailoring to needs of analyses.
+
+
+######################
+## Dependencies ######
+- Depending on which module you run, dependencies might be different - relying on files and tools from other modules or software
+- More details under 'Usage'
+- In particular, please install 
+(1) BedTools (intersectBed is largely required) 
+(2) VEP from Ensembl (preferably 73)
+
+
+######################
+## USAGE #############
+
+	Usage:
+		motifVar.sh <flag> <smart domain name> <SMART fasta file> <Ensembl version> <ensembl2coding file> <SNV BED file> <SNV catalog name> <anc allele BED file>
+	
+	Example:
+		motifVar.sh 12 TPR /path/HUMAN_TPR.fa 73 /path/to/ensembl2coding.file ExAC.pass.bed ExAC.r0.3 /path/to/variant_effect_predictor.pl /path/to/anc.allele.bed > motifvar-160424.log"
+
+**Note there are 9 arguments for modules 1-9, and only 5 arguments for module 'protPos2gPos'
+**Not all arguments are required. Replace argument with '-' if argument not required.
+**Please end all paths with with '/' 
+
+1: <flag>                      = integeri or string; required for ALL runs; 1-9 (refer to FLAG CODE) (9 arguments expected) or protPos2gPos (only 5 args)
+2: <smart domain name>         = string; required for ALL; domain name from SMART database, used to grab some files e.g. TPR
+3: <SMART fasta file>          = string; required by module 1; full path of fasta file from SMART database, with header ">smart|TPR-ensembl|ENSP00000245105|ENSP00000245105/560-593 no description [Homo sapiens]"
+4: <Ensembl version>           = integer; required by ALL, Ensembl version, e.g. 73
+5: <ensembl2coding file>       = string; required by module 4; full path of ensembl2coding file (adapted from Ensembl BioMart), with tab-delimited header: "EnsemblGeneID   EnsemblTranscriptID	   EnsemblProteinID    EnsemblExonID  chr      strand    genomicCodingStart (1-based)      genomicCodingEnd"
+6: <SNV BED file>              = string; required by modules 5, 6 and 7; SNV BED filename (this file should be in folder 4)
+7: <column number>             = integer; required by modules 5 and 6; SNV catalog name for naming purposes, e.g. ExAC.r0.3
+8: <SNV catalog name>          = string; required by module 6; path of VEP 73 tool
+9: <anc allele BED file>       = string; required by module 9; path of ancestral allele BED file with only 4 cols, with 4th col the AA or ancestral allele (not derived allele)"
+
+######################
+## FLAG CODE #########
+
+protPos2gPos: requires 5 args; run only the module 'protPos2gPos' (smartAApos2genomePos), which converts protein positions in SMART domains to genomic positions using Ensembl IDs of proteins with SMART domains
+	arg1: protPos2gPos
+	arg2: ensembl2coding file path (adapted from Ensembl BioMart)
+		--file header: EnsemblGeneID   EnsemblTranscriptID  EnsemblProteinID    EnsemblExonID  chr      strand"  echo "genomicCodingStart (1-based)      genomicCodingEnd"
+	arg3: SMART domain file path with EnsemblProtID (converted from motifVar_smartAApos2tsv after obtaining SMART domain info from Ensembl using ensembl_perl_api_smart_domains.pl)
+		--file header: chr     smart   protaastart     protaaend    EnsemblProtID
+	arg4: SMART domain file path directly from SMART database
+		--file header: DOMAIN  ACC     DEFINITION      DESCRIPTION
+	arg5: ensembl version
+
+EXAMPLE: 
+	motifVar.sh protPos2gPos /ens/path/ensembl2coding_ens.noErr.txt /ens/path/allchr.ens73.noErr.tsv /smart/path/smart_domains_1158_all_131025.txt 73"
+
+
+
+**ALL FLAG CODES below require 9 args
+**A combination of modules:e.g. 12, will run modules 1 and 2; 123, runs modules 1,2 and 3
+1:fasta2prot; requires args 1, 2, 3, 4; convert fasta files from SMART to tab-delimited files, using the fasta headers
+2:domain2info; requires args 1, 2, 4; requires \"protPos2gPos\", obtain domain info from protPos2gPos info master file
+3:info2seq; requires args 1, 2, 4; requires modules 1 and 2, currently grabs fasta sequence remotely from Ensembl 73; requires installation of WebLogo and module Bio::EnsEMBL::Registry in Perl installation, with .bash_profile modified to run WebLogo (download from GitHub), grabs protein sequences and make a sequence logo using WebLogo
+4:domain2codon; requires args 1, 2, 4, 5; requires modules 1 and 3, outputs a BED file; splice up the DNA sequences into codons using ensembl2coding file
+5:codonIntersectSnv; requires args 1, 2, 4, 6, 7; requires modules 1 and 4, output a BED file; intersects codon BED file with SNV BED file, DOES NOT remove chrX, chrY, chrM or singletons (allele count 1)
+6:VEP and retains only coding, canonical transcripts, output a BED-like TXT file (sed 1d to convert to BED); requires args 1, 2, 4, 6, 7, 8; requires module 5 and VEP 73, Ensembl v73 cache and API to be installed. Do NOT do this on the head node. It assumes also that the SNV BED file has the following columns: \n col1:chr, col3:end position 1 based, col5:ref allele, col6:alt allele \n NOTE: if SNV file is not in the format above, and not VEP 73, this module needs to be manually edited in this script.
+7:SNVmerge, merges the SNV BED+codon file using the VEP output in module 6; requires args 1, 2, 4, 7; requires modules 6; produces 2 output files, one with and without sex chromosomes
+8:SNVprofiles, provides files for SIFT, R/C, NS/S calculations; requires args 1, 2, 4, 7; requires modules 7; uses autosomal file from module 7 to produce SNV profiles
+9:deltaDAF, provides results for deltaDAF; requires args 1, 2, 4, 7, 9; requires modules 7; uses autosomal file from module 7 to produce SNV profiles
+-1: if $1 -eq -1, clean up everything; creates a folder 'trash'
+	EXAMPLE: motifvar.sh -1
+

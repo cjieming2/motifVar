@@ -1,0 +1,67 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+
+use Bio::EnsEMBL::Registry;
+
+my $registry = 'Bio::EnsEMBL::Registry';
+$registry->load_registry_from_db(-host => 'ensembldb.ensembl.org',
+				 -user => 'anonymous',
+				 -version => 73);
+
+my $translation_adaptor = $registry->get_adaptor('Human', 'Core', 'Translation');
+
+open my $INPUT, "<$ARGV[0]" or die "Cannot open file $ARGV[0]: $!\n";
+open my $OUTPUT, ">$ARGV[1]" or die "Cannot open file $ARGV[1]: $!\n";
+my $FORMAT = '^<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+';
+
+while (my $stable_id = <$INPUT>) {
+  chomp($stable_id);
+
+  my $translation = 
+    $translation_adaptor->fetch_by_stable_id($stable_id);
+  warn "Undefined translation object for stable id: $stable_id"
+    and next unless $translation;
+
+  my $gene = $translation->transcript->get_Gene();
+
+  printf $OUTPUT ">%s|%s|%s\n", $gene->seq_region_name, $gene->stable_id, $stable_id;
+
+  my $sequence = $translation->seq;
+  my $start = 0;
+  my $end = length($sequence);
+  #chunk the sequence in 60kb chunks to use less memory
+  my $cur = $start;
+  while ($cur < $end) {
+    my $to = $cur + 60;
+    $to = $end if $to > $end;
+    my $seq = substr($sequence, $cur, $to-$cur);
+    print $OUTPUT $seq, "\n";
+    $cur = $to;
+  }
+  # while($cur <= $end) {
+  #   my $to = $cur + 59_999;
+  #   $to = $end if($to > $end); 
+  #   my $seq = substr($sequence, $cur, $to);
+  #   $cur = $to + 1;
+  #   write_seq($OUTPUT, $FORMAT, $seq);
+  # }
+}
+
+close $INPUT;
+close $OUTPUT;
+
+sub write_seq {
+  my ($self, $FH, $FORMAT, @values) = @_;
+  
+  #while the last value still contains something
+  while(defined($values[-1]) and $values[-1] ne '') {
+    formline($FORMAT, @values);
+    print( $FH, $^A );
+    $^A = '';
+  }
+}
+
+

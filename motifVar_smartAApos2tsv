@@ -1,0 +1,117 @@
+#!/usr/bin/perl
+
+use warnings;
+use strict;
+use File::Basename;
+use Getopt::Long;
+use Pod::Usage;
+
+=head1 NAME
+
+smartAApos2tsv
+
+=head1 SYNOPSIS
+
+ smartAApos2tsv [options] <smartDomain-file>
+
+  -h help
+  
+  <smartDomain-file> file extracted from Ensembl about protein domains (from Suganthi), format looks like this (tab-delimited):
+  Chromosome:1...
+	SM00454 540-607 (ENSP00000342313)          
+	(smartDomainID  residuePos EnsemblProteinID)
+ 
+  OUTPUT: tab delimited
+  col1: chr
+  col2: smartDomainID  
+  col3: residuePos start
+  col4: residuePos end
+  col5: EnsemblProteinID
+  
+  Example:
+     smartAApos2tsv allchromosomes.ens73.alldomainfeatures.smart.txt > jm.txt
+  
+=head1 DESCRIPTION
+
+=cut
+
+#option variables
+my $help;
+my $ensemblFile = '';
+
+#initialize options
+Getopt::Long::Configure ('bundling');
+
+if(!GetOptions ('h'=>\$help, 'e=s'=>\$ensemblFile) || scalar(@ARGV)!=1)
+{
+    if ($help)
+    {
+        pod2usage(-verbose => 2);
+    }
+    else
+    {
+        pod2usage(1);
+    }
+}
+
+## output file
+#my($name, $path, $ext) = fileparse($ifile, '\..*');
+#my $ofile = "$name.out";
+#open (OUTPUT, ">$ofile") || die "Cannot open $ofile: $!";
+
+# variables
+my $headerProcessed = 0;
+my $domainCtr = 0;
+my %header2col;
+my %proteinID2aaPos2gPos;
+my $aaPosCtr = 1;
+my $ctr = 0;
+my $offset = 0;
+	
+## input smart domain file
+my $ifile = $ARGV[0];
+open (INPUT, $ifile) || die "Cannot open $ifile: $!";
+
+# variables
+my $chr2 = 0;
+my $chrflag = 0;
+my $prev = 0;
+
+print "chr\tsmart\tstart\tend\tEnsemblProteinID\n";
+
+while(<INPUT>)
+{
+	s/\r?\n?$//;
+	chomp;
+	
+	if($_ =~ m/Chromosome:(\d+|MT|X|Y)\.\.\./)
+	{
+		$chr2 = $1; 
+		$chrflag = 1;
+		next;
+	}
+	elsif(!$chrflag)
+	{
+		die "No Chromosome line:$!";
+	}
+	else
+	{
+		my @fields2 = split(/\t/, $_);
+		
+		my $name    = $fields2[0];
+		$fields2[1] =~ m/(\d+)\-(\d+)/;
+		my $aaStart = $1;
+		my $aaEnd   = $2;
+		
+		$fields2[2] =~ m/\((.*)\)/;
+		my $ensp    = $1;
+		
+		print "chr$chr2\t$name\t$aaStart\t$aaEnd\t$ensp\n";
+	}
+		
+		
+}
+
+
+close(INPUT);
+	

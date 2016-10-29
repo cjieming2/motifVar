@@ -1,0 +1,337 @@
+#!/usr/bin/perl
+
+use warnings;
+use strict;
+use File::Basename;
+use Getopt::Long;
+use Pod::Usage;
+
+=head1 NAME
+
+msa2consensus4lyn
+
+=head1 SYNOPSIS
+
+ tsvseq2consensus4lyn [options] <fasta-file>
+
+  -h help
+  -c required; the column number (1-based) for the sequence to be aligned. The script removes any '_' in this column.
+  -n optional; by default, it uses the filename of the input (before '.'); you can specifiy your own
+  -i optional; default = 0; if 1, prints raw counts
+  
+  This script is currently tailored for use with SMART-generated tsv file information, for Regan Lab, to generate global propensities and consensus information. 
+  It can be modified to include other kinds of information, such as simple frequencies without normalization.
+  
+  Note that the normalization is initially based on Pfam database, computed by Main et. al. (2003), similar to occurrence of aa found in similar databases such as SWISSPROT and TrEMBL:
+  'L'=>0.1,'A'=>0.08,'S'=>0.07,'V'=>0.07,'G'=>0.07,
+	'K'=>0.06,'T'=>0.06,'I'=>0.06,'E'=>0.06,
+	'P'=>0.05,'R'=>0.05,'D'=>0.05,
+	'F'=>0.04,'Q'=>0.04,'N'=>0.04,
+	'Y'=>0.03,'C'=>0.03,
+	'H'=>0.02,'M'=>0.02,
+	'W'=>0.01
+
+	But now it has been recalculated on SMART database (Jan 2012) (default) using findWord4nick; not much difference (1sf).	The script has them up to 5dp.
+	'L'=>0.09888,'A'=>0.07755,'S'=>0.06374,'V'=>0.06962,'G'=>0.07106,
+									'K'=>0.05404,'T'=>0.05364,'I'=>0.05835,'E'=>0.06465,
+									'P'=>0.04065,'R'=>0.05959,'D'=>0.05775,
+									'F'=>0.03762,'Q'=>0.03972,'N'=>0.04102,
+									'Y'=>0.03017,'C'=>0.02264,
+									'H'=>0.02652,'M'=>0.02074,
+									'W'=>0.01129
+   
+   Also the human proteome calculation has been included (Jan 2012):
+   'L'=>0.09975,'A'=>0.07013,'S'=>0.08326,'V'=>0.05961,'G'=>0.06577,
+									'K'=>0.05723,'T'=>0.05346,'I'=>0.04332,'E'=>0.07096,
+									'P'=>0.06316,'R'=>0.05650,'D'=>0.04728,								
+									'F'=>0.03658,'Q'=>0.04758,'N'=>0.03586,
+									'Y'=>0.02653,'C'=>0.02307,'H'=>0.02639,'M'=>0.02131,
+									'W'=>0.01216
+						
+  INPUT:
+  -tab-delimited
+  -the script assumes that all the sequences in the chosen column have the same length.
+  -header is required
+  
+  OUTPUT: (all 4dp)
+  <filename>.global
+  -first 2 lines: the number of sequences and length of sequence (calculated from the first sequence)
+  -row   - sequence position
+  -col   - amino acid, ranked by global propensities
+  -entry - global propensity of aa at that position
+  <filename>.rfreq
+  -first 2 lines: the number of sequences and length of sequence
+  -row   - sequence position
+  -col   - amino acid, ranked by raw frequency
+  -entry - raw freq of aa at that position
+  <filename>.re
+  -first 2 lines: the number of sequences and length of sequence
+  -row   - sequence position
+  -col   - amino acid, ranked by relative entropy
+  -entry - relative entropy of aa at that position
+  <filename>.aamat
+  -row   - sequence position, with a column called "others" to show which other "amino acids" are also present in the sequences
+  -col   - amino acid + others
+  -entry - raw counts
+  
+  
+  Example:
+    msaseq2consensus4lyn -c 9 jm.txt
+  
+=head1 DESCRIPTION
+
+=cut
+
+#option variables
+my $help;
+my $ifile;
+my $col;
+my $printrawcounts = 0;
+my $name = "ninjaturtlescowabunga";
+
+#initialize options
+Getopt::Long::Configure ('bundling');
+
+if(!GetOptions ('h'=>\$help, 'c=i'=>\$col, 'i=i'=>\$printrawcounts, 'n=s'=>\$name) || scalar(@ARGV)!=1)
+{
+    if ($help)
+    {
+        pod2usage(-verbose => 2);
+    }
+    else
+    {
+        pod2usage(1);
+    }
+}
+
+$col = $col-1;
+## input file
+$ifile = $ARGV[0];
+open (IN, $ifile) || die "Cannot open $ifile: $!";
+
+## output file
+if($name eq "ninjaturtlescowabunga")
+{  
+	my($name1, $path, $ext) = fileparse($ifile, '\..*');  
+	$name = $name1;
+}
+
+my $globalfile = "$name.global";
+my $rfreqfile  = "$name.rfreq";
+my $refile     = "$name.re";
+
+#open (OUTPUT, ">$ofile") || die "Cannot open $ofile: $!";
+#print OUTPUT "p";
+
+# variable
+my %aa2counts;
+my @aalist = qw(A C D E F G H I K L M N P Q R S T V W Y);
+my $numSeq = 0;
+my $outputheaderprocessed = 0;
+my $seqlen = 0;
+
+## Pfam
+#my %normWeight = ( 'L'=>0.1,'A'=>0.08,'S'=>0.07,'V'=>0.07,'G'=>0.07,
+#										'K'=>0.06,'T'=>0.06,'I'=>0.06,'P'=>0.05,'R'=>0.05,
+#										'D'=>0.05,'F'=>0.04,'Q'=>0.04,'N'=>0.04,'Y'=>0.03,
+#										'C'=>0.03,'H'=>0.02,'M'=>0.02,'W'=>0.01,'E'=>0.06,								
+#									);
+
+## SMART database
+#my %normWeight = ( 'L'=>0.09888,'A'=>0.07755,'S'=>0.06374,'V'=>0.06962,'G'=>0.07106,
+#									'K'=>0.05404,'T'=>0.05364,'I'=>0.05835,'E'=>0.06465,
+#									'P'=>0.04065,'R'=>0.05959,'D'=>0.05775,
+#									'F'=>0.03762,'Q'=>0.03972,'N'=>0.04102,
+#									'Y'=>0.03017,'C'=>0.02264,
+#									'H'=>0.02652,'M'=>0.02074,
+#									'W'=>0.01129
+#								 );
+
+## human proteome
+my %normWeight = ('L'=>0.09975,'A'=>0.07013,'S'=>0.08326,'V'=>0.05961,'G'=>0.06577,
+									'K'=>0.05723,'T'=>0.05346,'I'=>0.04332,'E'=>0.07096,
+									'P'=>0.06316,'R'=>0.05650,'D'=>0.04728,								'F'=>0.03658,'Q'=>0.04758,'N'=>0.03586,
+									'Y'=>0.02653,'C'=>0.02307,'H'=>0.02639,'M'=>0.02131,
+									'W'=>0.01216
+								);
+
+my %weightedfreq;
+my %re;
+
+## loop each line of sequence
+while(<IN>)
+{		
+
+	if($numSeq == 0)
+	{
+		$numSeq++;
+		next;
+	}
+	
+	chomp $_;
+		
+	my @line = split(/\t/,$_);
+	$line[$col] =~ s/_//g;
+	my @sequence = split(//,$line[$col]);
+	$seqlen = $#sequence + 1;
+	
+	## read each sequence by position and calc counts of aa (aa2counts{position}{aa})
+	## (based on sequence, so it is possible that something out of the 20 is here)
+	## note that the first position is 0 here
+	for(my $i=0;$i<@sequence;$i++)
+	{
+		if(!exists($aa2counts{$i}))
+		{
+			$aa2counts{$i}{$sequence[$i]} = 1;
+		}
+		else
+		{
+			$aa2counts{$i}{$sequence[$i]}++;
+		}
+		
+		if(!$outputheaderprocessed)
+		{
+			my $position = $i+1;
+#			print OUTPUT "\t$position";
+		}
+	}
+	
+	$numSeq++;
+	$outputheaderprocessed = 1;
+}
+
+## print output1
+#print OUTPUT "\n";
+
+$numSeq = $numSeq-1;
+
+## for each of the 20 amino acid
+for(my $k=0;$k<@aalist;$k++)
+{
+  ## assign weights in global propensities
+	if(!exists($normWeight{$aalist[$k]}))
+	{
+		$normWeight{$aalist[$k]} = 1;
+		warn "aa $aalist[$k] does not have a weight; assigned weight of 1!";
+	}
+	
+#	print OUTPUT "$aalist[$k]";
+  ## frequency calculations
+	for (my $j=0;$j<$seqlen;$j++)
+	{
+		if(exists($aa2counts{$j}{$aalist[$k]}))
+		{			
+			my $aafreq = $aa2counts{$j}{$aalist[$k]}/($numSeq);
+			$weightedfreq{$j}{$aalist[$k]} = $aafreq/$normWeight{$aalist[$k]};
+			$re{$j}{$aalist[$k]} = $aafreq * log($aafreq/$normWeight{$aalist[$k]});
+#			printf OUTPUT "\t%.2f;%.2f", $aafreq, $weightedfreq{$j}{$aalist[$k]};
+#			printf OUTPUT "\t%.2f", $weightedfreq{$j}{$aalist[$k]};
+		}
+		else
+		{
+			$aa2counts{$j}{$aalist[$k]} = 0;
+			$weightedfreq{$j}{$aalist[$k]} = 0;
+#			print OUTPUT "\t0";
+		}
+	}
+#	print OUTPUT "\n";
+}
+
+# summary output1
+open (GLOBAL, ">$globalfile") || die "Cannot open $globalfile: $!";
+open (RFREQ, ">$rfreqfile") || die "Cannot open $rfreqfile: $!";
+open (RE, ">$refile") || die "Cannot open $refile: $!";
+
+print GLOBAL <<END;
+#num of sequences = $numSeq
+#len of sequence  = $seqlen
+END
+
+print RFREQ <<END1;
+#num of sequences = $numSeq
+#len of sequence  = $seqlen
+END1
+
+print RE <<END2;
+#num of sequences = $numSeq
+#len of sequence  = $seqlen
+END2
+
+for my $poskey (sort {$a<=>$b} keys %aa2counts)
+{
+	my $actualpos = $poskey + 1;
+	print GLOBAL "pos$actualpos";
+	print RFREQ "pos$actualpos";
+	print RE "pos$actualpos";
+	
+	### global propensities
+	for my $aakey (sort {$weightedfreq{$poskey}{$b}<=>$weightedfreq{$poskey}{$a}} keys % {$weightedfreq{$poskey}})
+	{
+		printf GLOBAL "\t$aakey=%.4f", $weightedfreq{$poskey}{$aakey};
+	}
+	
+	print GLOBAL "\n";
+	
+	### print raw freq
+	for my $aakey (sort {$aa2counts{$poskey}{$b}<=>$aa2counts{$poskey}{$a}} keys % {$aa2counts{$poskey}})
+	{
+		printf RFREQ "\t$aakey=%.4f", $aa2counts{$poskey}{$aakey}/$numSeq;
+	}
+	
+	print RFREQ "\n";
+	
+	### print relative freq
+	for my $aakey (sort {$re{$poskey}{$b}<=>$re{$poskey}{$a}} keys % {$re{$poskey}})
+	{
+		printf RE "\t$aakey=%.4f", $re{$poskey}{$aakey};
+	}
+	
+	print RE "\n";
+}
+
+# summary output2 - print raw counts
+if($printrawcounts == 1)
+{
+	my $rawcountfile = "$name.aamat";
+	open (RAW, ">$rawcountfile") || die "Cannot open $rawcountfile: $!";
+	
+	## print header
+	print RAW "position\t", join("\t",@aalist), "\tothers\n";
+	
+	## print content
+	for my $poskey (sort {$a<=>$b} keys %aa2counts)
+	{
+		my $actualpos = $poskey + 1;
+		my $totalaacount = 0;
+		print RAW "pos$actualpos";
+		
+		my %keylist = %aa2counts;
+	
+		### print raw counts
+		for (my $i=0;$i<@aalist;$i++)
+		{
+			printf RAW "\t$aa2counts{$poskey}{$aalist[$i]}";
+			$totalaacount = $totalaacount + $aa2counts{$poskey}{$aalist[$i]};
+			delete $keylist{$poskey}{$aalist[$i]};
+		}
+		
+		my $others = $numSeq - $totalaacount;
+		print RAW "\t";
+		
+		############### this snippet prints out the constitution of "others"
+#		for my $left (keys % {$keylist{$poskey}})
+#		{
+#			print RAW "$left=$keylist{$poskey}{$left}_";
+#		}
+		
+		print RAW "$others\n";
+	}
+	
+	
+	close (RAW);
+}
+
+close (IN);
+close (GLOBAL);
+close (RFREQ);
+close (RE);
